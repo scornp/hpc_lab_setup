@@ -1,0 +1,279 @@
+ - job:
+         name: ohpc_install
+         description: "This is the job to install OpenHPC on a cluster"
+         project-type: freestyle
+         block-downstream: false
+         concurrent: true
+         properties:
+                 - authorization:
+                         hpc-sig-admin:
+                                 - credentials-create
+                                 - credentials-delete
+                                 - credentials-manage-domains
+                                 - credentials-update
+                                 - credentials-view
+                                 - job-build
+                                 - job-cancel
+                                 - job-configure
+                                 - job-delete
+                                 - job-discover
+                                 - job-move
+                                 - job-read
+                                 - job-status
+                                 - job-workspace
+                                 - ownership-jobs
+                                 - run-delete
+                                 - run-update
+                                 - scm-tag
+                         hpc-sig-devel:
+                                 - job-build
+                                 - job-read
+         parameters:
+                 - node:
+                         name: node
+                         allowed-slaves:
+                                 - d05ohpc
+                                 - qdfohpc
+                                 - tx2ohpc
+                                 - x86ohpc
+                         allowed-multiselect: true
+                         ignore-offline-nodes: true
+                         description: 'Node on which to execute this job'
+                 - choice:
+                         name: method
+                         choices:
+                                 - stateful
+                         default: 'stateful'
+                         description: 'The type of OHPC install to do'
+                 - string:
+                         name: client_branch
+                         default: 'master'
+                         description: 'Branch name of the mr-provisioner-client to use'
+                 - string:
+                         name: automation_branch
+                         default: 'linaro'
+                         description: 'Branch name of the ohpc install recipe'
+         builders:
+                 - shell: |
+                        #!/bin/bash
+                        set -ex
+
+                        mr_provisioner_url='http://10.40.0.11:5000'
+                        mr_provisioner_token=$(cat "/home/${NODE_NAME}/mrp_token")
+
+                        mellanox_iso_url="http://www.mellanox.com/downloads/ofed/MLNX_OFED-4.4-1.0.0.0/MLNX_OFED_LINUX-4.4-1.0.0.0-rhel7.5alternate-aarch64.iso"
+                        mellanox_iso_file="MLNX_OFED_LINUX-4.4-1.0.0.0-rhel7.5alternate-aarch64.iso"
+                        force_service=True
+                        sms_ipoib_internal='ib0'
+                        cnodes_ipoib_internal='ib0'
+                        ipoib_netmask="255.255.255.0"
+
+                        if [ ${method} == 'stateful' ]; then
+                                internal_network='10.40.0.0'
+                                internal_netmask='255.255.0.0'
+                                internal_broadcast='10.40.255.255'
+                                internal_gateway='10.40.0.1'
+                                internal_dns=${internal_gateway}
+                                internal_domain_name=''
+                                # Enable components options
+                                enable_beegfs_client=False
+                                enable_mpi_defaults=True
+                                ohpc_lmod_mpi_default="lmod-defaults-gnu8-openmpi3-ohpc"
+                                enable_mpi_opa=False
+                                enable_clustershell=True
+                                enable_ipmisol=False
+                                enable_opensm=False
+                                enable_ipoib=False
+                                enable_ganglia=False
+                                enable_genders=False
+                                enable_kargs=False
+                                enable_lustre_client=False
+                                enable_mrsh=False
+                                enable_nagios=False
+                                enable_powerman=False
+                                enable_intel_packages=False
+                                enable_dhcpd_server=False
+                                enable_ifup=False
+                                enable_warewulf=False
+                                enable_nfs_ohpc=True
+                                enable_nfs_home=True
+                                enable_helloworld=True
+
+                        else
+                                echo 'Stateless not implemented'
+                                exit 1
+                        fi
+
+                        if [ ${node} == 'qdfohpc' ]; then
+                                master_ipoib_internal='ib0'
+                                cnodes_ipoib_internal='ib0'
+                                master_name='qdfohpc'
+                                cnodes=('qdf01' 'qdf02' 'qdf03')
+                                master_eth_internal='eth0'
+                                eth_provision='eth0'
+                                num_compute='3'
+                                compute_prefix='qdf0'
+                                compute_regex='qdf0[1-3]'
+                                kargs=''
+                                additional_modules='qcom_emac'
+                                enable_opensm=True
+                                enable_ipoib=True
+                                enable_ifup=True
+                                enable_linux_ib=False
+                                enable_mellanox_ib=True
+                                mofed_install_opts="--distro rhel7.5alternate"
+                                enable_socket_direct=True
+                        elif [ ${node} == 'x86ohpc' ]; then
+                                mellanox_iso_url=""
+                                mellanox_iso_file=""
+                                master_ipoib_internal='ib0'
+                                cnodes_ipoib_internal='ib0'
+                                master_name='x86ohpc'
+                                cnodes=('x8601' 'x8602')
+                                master_eth_internal='eno1'
+                                eth_provision='eno1'
+                                num_compute='2' 
+                                compute_prefix='x860'
+                                compute_regex='x860[1-2]'
+                                kargs=''
+                                enable_opensm=False
+                                enable_ipoib=False
+                                enable_ifup=False
+                                enable_linux_ib=False
+                                enable_mellanox_ib=False
+                                mofed_install_opts=""
+                                enable_socket_direct=False
+                        elif [ ${node} == 'd05ohpc' ]; then
+                                master_ipoib_internal='ib0'
+                                cnodes_ipoib_internal='ib0'
+                                master_name='d05ohpc'
+                                cnodes=('d0501' 'd0502' 'd0503')
+                                master_eth_internal='enahisic2i1'
+                                eth_provision='enahisic2i1'
+                                num_compute='3' 
+                                compute_prefix='d050'
+                                compute_regex='d050[1-3]'
+                                kargs=' modprobe.blacklist=hibmc_drm'
+                                enable_opensm=False
+                                enable_ipoib=False
+                                enable_ifup=False
+                                enable_linux_ib=False
+                                enable_mellanox_ib=False
+                                mofed_install_opts=""
+                                enable_socket_direct=False
+                        elif [ ${node} == 'tx2ohpc' ]; then
+                                master_ipoib_internal='ib0'
+                                cnodes_ipoib_internal='ib0'
+                                master_name='tx2ohpc'
+                                cnodes=('tx201' 'tx202')
+                                master_eth_internal='enp0s0f1'
+                                eth_provision='enp0s0f1'
+                                num_compute='2'
+                                compute_prefix='tx20'
+                                compute_regex='tx20[1-2]'
+                                kargs=' console=tty0'
+                                enable_opensm=False
+                                enable_ipoib=False
+                                enable_ifup=False
+                                enable_linux_ib=False
+                                enable_mellanox_ib=False
+                                mofed_install_opts=""
+                                enable_socket_direct=False
+                        fi
+
+                        if [ -d ${WORKSPACE}/mr-provisioner-client ]; then
+                            rm -rf ${WORKSPACE}/mr-provisioner-client
+                        fi
+                        git clone -b ${client_branch} https://github.com/Linaro/mr-provisioner-client.git ${WORKSPACE}/mr-provisioner-client
+
+                        master_ip=$( ./mr-provisioner-client/mrp_client.py --mrp-url=${mr_provisioner_url} --mrp-token=${mr_provisioner_token} net --action getip --machine ${master_name} --interface eth1 )
+                        IFS="." read -ra HOST <<< "${master_ip}"
+                        ipoib_master="192.168.100.${HOST[-1]}"
+
+                        for i in "${cnodes[@]}"; 
+                        do 
+                                declare ip_${i}=$( ./mr-provisioner-client/mrp_client.py --mrp-url=${mr_provisioner_url} --mrp-token=${mr_provisioner_token} net --action getip --machine ${i} --interface eth1 )
+                                declare mac_${i}=$( ./mr-provisioner-client/mrp_client.py --mrp-url=${mr_provisioner_url} --mrp-token=${mr_provisioner_token} net --action getmac --machine ${i} --interface eth1 )
+                                # Get the XXX in 10.40.24.XXX to make 192.168.100.XXX
+                                var=ip_${i}
+                                IFS="." read -ra HOST <<< "${!var}"
+                                declare ipoib_${i}="192.168.100.${HOST[-1]}"
+                        done
+
+
+                        cat << EOF > ${WORKSPACE}/hosts
+                        [sms]
+                        ${master_ip}
+                        [cnodes]
+                        $(for i in "${cnodes[@]}"; do var=ip_${i}; echo -e "${!var}"; done)
+                        [ionodes]
+                        ${master_ip}
+                        [devnodes]
+                        ${master_ip}
+                        EOF
+
+                        cat << EOF > ${WORKSPACE}/ohpc_installation.yml
+                        mellanox_iso_url: ${mellanox_iso_url}
+                        mellanox_iso_file: ${mellanox_iso_file}
+                        sms_name: ${master_name}
+                        sms_ip: ${master_ip}
+                        sms_eth_internal: ${master_eth_internal}
+                        internal_network: ${internal_network}
+                        internal_netmask: ${internal_netmask}
+                        internal_broadcast: ${internal_broadcast}
+                        internal_gateway: ${internal_gateway}
+                        internal_domain_name: ${internal_domain_name}
+                        internal_domain_name_servers: ${internal_dns}
+                        eth_provision: ${eth_provision}
+                        cnode_eth_internal: ${eth_provision}
+                        force_service: ${force_service}
+                        enable_beegfs_client: ${enable_beegfs_client}
+                        enable_mpi_defaults: ${enable_mpi_defaults}
+                        ohpc_lmod_mpi_default: ${ohpc_lmod_mpi_default}
+                        enable_mpi_opa: ${enable_mpi_opa}
+                        enable_clustershell: ${enable_clustershell}
+                        enable_ipmisol: ${enable_ipmisol}
+                        enable_opensm: ${enable_opensm}
+                        enable_linux_ib: ${enable_linux_ib}
+                        enable_mellanox_ib: ${enable_mellanox_ib}
+                        mofed_install_opts: ${mofed_install_opts}
+                        enable_socket_direct: ${enable_socket_direct}
+                        enable_ipoib: ${enable_ipoib}
+                        enable_ganglia: ${enable_ganglia}
+                        enable_genders: ${enable_genders}
+                        enable_kargs: ${enable_kargs}
+                        enable_lustre_client: ${enable_lustre_client}
+                        enable_mrsh: ${enable_mrsh}
+                        enable_nagios: ${enable_nagios}
+                        enable_powerman: ${enable_powerman}
+                        enable_intel_packages: ${enable_intel_packages}
+                        enable_dhcpd_server: ${enable_dhcpd_server}
+                        enable_ifup: ${enable_ifup}
+                        enable_warewulf: ${enable_warewulf}
+                        enable_nfs_ohpc: ${enable_nfs_ohpc}
+                        enable_nfs_home: ${enable_nfs_home}
+                        enable_helloworld: ${enable_helloworld}
+                        kargs: ${kargs}
+                        additional_modules: ${additional_modules}
+                        num_computes: ${num_compute}
+                        compute_regex: ${compute_regex}
+                        compute_prefix: ${compute_prefix}
+                        compute_nodes:
+                        $(p=0; for i in "${cnodes[@]}"; do ip=ip_${i}; mac=mac_${i}; let "p++"; echo -e "- { num: '${p}', c_name: '${i}', c_ip: '${!ip}', c_mac: '${!mac}', c_bmc: '10.41.1.0' }"; done)
+                        sms_ipoib_internal: ${master_ipoib_internal}
+                        cnodes_ipoib_internal: ${cnodes_ipoib_internal}
+                        sms_ipoib: ${ipoib_master}
+                        ipoib_netmask: ${ipoib_netmask}
+                        compute_ipoib:
+                        $(p=0; for i in "${cnodes[@]}"; do ip=ip_${i}; ipoib=ipoib_${i}; let "p++"; echo -e "- { num: '${p}', c_hostname: '${!ip}', c_ipoib: '${!ipoib}' }"; done)
+                        EOF
+
+                        if [ -d ${WORKSPACE}/ansible-playbook-for-ohpc ]; then
+                            rm -rf ${WORKSPACE}/ansible-playbook-for-ohpc
+                        fi
+                        git clone -b ${automation_branch} https://github.com/Linaro/ansible-playbook-for-ohpc.git ${WORKSPACE}/ansible-playbook-for-ohpc
+
+                        eval `ssh-agent`
+                        ssh-add
+                        ANSIBLE_CONFIG=${WORKSPACE}/ansible-playbook-for-ohpc/ansible.cfg ansible-playbook ${WORKSPACE}/ansible-playbook-for-ohpc/site.yml --extra-vars="@${WORKSPACE}/ohpc_installation.yml" -i ${WORKSPACE}/hosts -u root
+                        ssh-agent -k 

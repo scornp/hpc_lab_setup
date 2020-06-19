@@ -1,0 +1,273 @@
+ - job:
+         name: ohpc_test_suite
+         description: "This is the job to run the OpenHPC test suite on a cluster"
+         project-type: freestyle
+         block-downstream: false
+         concurrent: true
+         properties:
+                 - authorization:
+                         hpc-sig-admin:
+                                 - credentials-create
+                                 - credentials-delete
+                                 - credentials-manage-domains
+                                 - credentials-update
+                                 - credentials-view
+                                 - job-build
+                                 - job-cancel
+                                 - job-configure
+                                 - job-delete
+                                 - job-discover
+                                 - job-move
+                                 - job-read
+                                 - job-status
+                                 - job-workspace
+                                 - ownership-jobs
+                                 - run-delete
+                                 - run-update
+                                 - scm-tag
+                         hpc-sig-devel:
+                                 - job-build
+                                 - job-read
+         parameters:
+                 - node:
+                         name: node
+                         allowed-slaves:
+                                 - d05ohpc
+                                 - qdfohpc
+                                 - tx2ohpc
+                                 - x86ohpc
+                         allowed-multiselect: true
+                         ignore-offline-nodes: true
+                         description: 'Node on which to execute this job'
+                 - choice:
+                         name: method
+                         choices:
+                                 - stateful
+                                 - stateless
+                         default: 'stateful'
+                         description: 'The type of OHPC install to do'
+                 - choice:
+                         name: test_type
+                         choices:
+                                 - long
+                                 - short
+                         default: 'short'
+                         description: 'The length of the tests' 
+                 - string:
+                         name: client_branch
+                         default: 'master'
+                         description: 'Branch name of the ohpc install recipe'
+                 - string:
+                         name: automation_branch
+                         default: 'linaro'
+                         description: 'Branch name of the ohpc install recipe'
+         builders:
+                 - shell: |
+                        #!/bin/bash
+                        set -ex
+                        mr_provisioner_url='http://10.40.0.11:5000'
+                        mr_provisioner_token=$(cat "/home/${NODE_NAME}/mrp_token")
+
+                        if [ ${node} == 'qdfohpc' ]; then
+                                master_name='qdfohpc'
+                                cnodes=('qdf01' 'qdf02' 'qdf03')
+                                num_compute='3'
+                                compute_regex='qdf0[1-3]'
+                        elif [ ${node} == 'd05ohpc' ]; then
+                                master_name='d05ohpc'
+                                cnodes=('d0501' 'd0502' 'd0503')
+                                num_compute='3' 
+                                compute_regex='d030[1-3]'
+                        elif [ ${node} == 'tx2ohpc' ]; then
+                                master_name='tx2ohpc'
+                                cnodes=('tx201' 'tx202')
+                                num_compute='2'
+                                compute_regex='tx20[1-2]'
+                        elif [ ${node} == 'x86ohpc' ]; then
+                                master_name='x86ohpc'
+                                cnodes=('x8601' 'x8602')
+                                num_compute='2'
+                                compute_regex='x860[1-2]'
+                        fi
+
+                        if [ -d ${WORKSPACE}/mr-provisioner-client ]; then
+                            rm -rf ${WORKSPACE}/mr-provisioner-client
+                        fi
+                        git clone -b ${client_branch} https://github.com/Linaro/mr-provisioner-client.git ${WORKSPACE}/mr-provisioner-client
+
+                        master_ip=$( ./mr-provisioner-client/mrp_client.py --mrp-url=${mr_provisioner_url} --mrp-token=${mr_provisioner_token} net --action getip --machine ${master_name} --interface eth1 )
+
+                        for i in "${cnodes[@]}"; 
+                        do 
+                                declare ip_${i}=$( ./mr-provisioner-client/mrp_client.py --mrp-url=${mr_provisioner_url} --mrp-token=${mr_provisioner_token} net --action getip --machine ${i} --interface eth1 )
+                        done
+                        
+                        if [ ${method} == 'stateful' ]; then
+                                enable_warewulf=False
+                        elif [ ${method} == 'stateless' ]; then
+                                enable_warewulf=True
+                        fi
+                        
+                        long='disable'
+                        if [ ${test_type} == 'long' ]; then
+                                long='enable'
+                        fi
+
+                        cat << EOF > ${WORKSPACE}/hosts
+                        [sms]
+                        ${master_ip}
+                        [cnodes]
+                        $(for i in "${cnodes[@]}"; do var=ip_${i}; echo -e "${!var}"; done)
+                        [ionodes]
+                        ${master_ip}
+                        [devnodes]
+                        ${master_ip}
+                        EOF
+
+                        cat << EOF > ${WORKSPACE}/ohpc_installation.yml
+                        sms_name: ${master_name}
+                        sms_ip: ${master_ip}
+                        enable_warewulf: ${enable_warewulf}
+                        enable_testsuiteohpc: True
+                        enable_junit: True
+                        num_computes: ${num_compute}
+                        compute_regex: ${compute_regex}
+                        configure_packages:
+                          - name: long
+                            status: ${long}
+                          - name: adios
+                            status: disable
+                          - name: boost
+                            status: enable
+                          - name: boost-mpi
+                            status: enable
+                          - name: compilers
+                            status: enable
+                          - name: extrae
+                            status: disable
+                          - name: fftw
+                            status: enable
+                          - name: gsl
+                            status: enable
+                          - name: geopm
+                            status: disable
+                          - name: hdf5
+                            status: disable
+                          - name: hwloc
+                            status: enable
+                          - name: hypre
+                            status: disable
+                          - name: imb
+                            status: disable
+                          - name: mpi
+                            status: enable
+                          - name: mumps
+                            status: enable
+                          - name: mfem
+                            status: enable
+                          - name: minife
+                            status: disable
+                          - name: netcdf
+                            status: disable
+                          - name: numpy
+                            status: enable
+                          - name: ocr
+                            status: enable
+                          - name: petsc
+                            status: enable
+                          - name: phdf5
+                            status: disable
+                          - name: plasma
+                            status: enable
+                          - name: pnetcdf
+                            status: disable
+                          - name: ptscotch
+                            status: enable
+                          - name: R
+                            status: enable
+                          - name: scotch
+                            status: enable
+                          - name: slepc
+                            status: enable
+                          - name: superlu
+                            status: enable
+                          - name: superlu_dist
+                            status: enable
+                          - name: scalasca
+                            status: disable
+                          - name: scipy
+                            status: enable
+                          - name: tau
+                            status: disable
+                          - name: trilinos
+                            status: enable
+                          - name: valgrind
+                            status: enable
+                          - name: hpcg
+                            status: enable 
+                          - name: autotools
+                            status: enable
+                          - name: cmake
+                            status: enable
+                          - name: charliecloud
+                            status: disable
+                          - name: easybuild
+                            status: enable
+                          - name: metis
+                            status: enable
+                          - name: tbb
+                            status: disable
+                          - name: minidft
+                            status: disable
+                          - name: minife
+                            status: enable
+                          - name: cilk
+                            status: disable
+                          - name: munge
+                            status: enable
+                          - name: mpi4py
+                            status: enable
+                          - name: mpiP
+                            status: disable
+                          - name: openblas
+                            status: enable
+                          - name: rms-harness
+                            status: enable
+                          - name: scalapack
+                            status: enable
+                          - name: papi
+                            status: disable
+                          - name: likwid
+                            status: disable
+                          - name: packaging
+                            status: enable
+
+                        mpi_families: openmpi3
+                        compiler_families: gnu8
+                        EOF
+
+                        if [ -d ${WORKSPACE}/ansible-playbook-for-ohpc ]; then
+                            rm -rf ${WORKSPACE}/ansible-playbook-for-ohpc
+                        fi
+                        git clone -b ${automation_branch} https://github.com/Linaro/ansible-playbook-for-ohpc.git ${WORKSPACE}/ansible-playbook-for-ohpc
+
+                        eval `ssh-agent`
+                        ssh-add
+                        ANSIBLE_CONFIG=${WORKSPACE}/ansible-playbook-for-ohpc/ansible.cfg ansible-playbook ${WORKSPACE}/ansible-playbook-for-ohpc/run_testsuite.yml --extra-vars="@${WORKSPACE}/ohpc_installation.yml" -i ${WORKSPACE}/hosts -u root
+                        ssh-agent -k
+
+                        if [ -f "${WORKSPACE}/${master_ip}/tmp/junit-results.tar.gz" ]; then
+                            rm -rf ${WORKSPACE}/results
+                            mkdir ${WORKSPACE}/results
+                            tar -xf ${WORKSPACE}/${master_ip}/tmp/junit-results.tar.gz -C ${WORKSPACE}/results
+                        else
+                            echo "FAILURE"
+                            exit 1
+                        fi
+
+
+         publishers:
+                 - junit:
+                        results: "results/*.xml, results/**/*.xml, results/**/**/*.xml, results/**/**/**/*.xml, results/**/**/**/**/*.xml"
+                        keep-long-stdio: yes
+                        allow-empty-results: yes

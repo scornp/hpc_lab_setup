@@ -1,0 +1,131 @@
+ - job:
+         name: provisioning_job
+         description: "This is a job for Provisioning a Machine using MrP"
+         project-type: freestyle
+         concurrent: true
+         block-downstream: false
+         properties:
+                 - authorization:
+                         hpc-sig-admin:
+                                 - credentials-create
+                                 - credentials-delete
+                                 - credentials-manage-domains
+                                 - credentials-update
+                                 - credentials-view
+                                 - job-build
+                                 - job-cancel
+                                 - job-configure
+                                 - job-delete
+                                 - job-discover
+                                 - job-move
+                                 - job-read
+                                 - job-status
+                                 - job-workspace
+                                 - ownership-jobs
+                                 - run-delete
+                                 - run-update
+                                 - scm-tag
+                         hpc-sig-devel:
+                                 - job-build
+                                 - job-read
+         parameters:
+                 - node:
+                         name: node
+                         default: ''
+                         description: 'Node with which to provision the machine'
+                 - string:
+                         name: machine_name
+                         default: ''
+                         description: 'The MrP name of the machine to provision'
+                 - string:
+                         name: kernel_desc
+                         default: ''
+                         description: 'The exact description in MrP of the kernel to be used'
+                 - string:
+                         name: initrd_desc
+                         default: ''
+                         description: 'The exact description in MrP of the initrd to be used'
+                 - string:
+                         name: preseed_name
+                         default: ''
+                         description: 'The exact name in MrP of the preseed to be used'
+                 - string:
+                         name: preseed_type
+                         default: 'preseed'
+                         description: 'The type of the preseed to be used (preseed or kickstart)'
+                 - string:
+                         name: machine_arch
+                         default: ''
+                         description: 'The name of the architecture in MrP of the machine to be provisioned'
+                 - string:
+                         name: machine_subarch
+                         default: ''
+                         description: 'The name of the subarchitecture in MrP (bootloader)'
+                 - string:
+                         name: kernel_opts
+                         default: ''
+                         description: 'The arguments to be passed to the kernel'
+                 - string:
+                         name: client_branch
+                         default: 'master'
+                         description: 'The branch of the mrp client to use'
+                 - string:
+                         name: automation_branch
+                         default: 'master'
+                         description: 'The Ansible logic branch to use'
+         builders:
+                 - shell: |
+                         #!/bin/bash
+                         set -x
+                         mname=$( echo $machine_name| cut -d',' -f 1)
+                         mrp_url=http://10.40.0.11:5000
+                         mrp_token=$(cat "/home/${NODE_NAME}/mrp_token")
+
+                         echo "Provisioning ${mname} with ${kernel_desc} and ${intrd_desc}"
+
+                         if [ -d "${WORKSPACE}/mr-provisioner-client" ]; then
+                                rm -rf ${WORKSPACE}/mr-provisioner-client
+                         fi
+                         git clone -b ${client_branch} https://github.com/Linaro/mr-provisioner-client.git ${WORKSPACE}/mr-provisioner-client
+
+                         DIR_NAME=${mname}$(date +%s)
+                         if [ -d "${WORKSPACE}/${DIR_NAME}" ]; then
+                                rm -rf ${WORKSPACE}/${DIR_NAME}
+                         fi
+                         mkdir ${WORKSPACE}/${DIR_NAME}
+
+                         IFS=',' read -ra mlist <<< "$machine_name"
+                         IFS=';' read -ra kopts_list <<< "$kernel_opts"
+
+                         #Build hosts file
+                         cat << EOF > ${WORKSPACE}/${DIR_NAME}/hosts
+                         [targets]
+                         $(for i in "${mlist[@]}"; do echo "$(${WORKSPACE}/mr-provisioner-client/mrp_client.py --mrp-url=${mrp_url} --mrp-token=${mrp_token} net --action getip --machine $i --interface eth1)"; done)
+                         EOF
+
+                         #Build machine params list
+                         cat << EOF > ${WORKSPACE}/${DIR_NAME}/provision.yml
+                         workspace: ${WORKSPACE}
+                         mrp_url: ${mrp_url}
+                         mrp_token: ${mrp_token}
+                         kernel_desc: ${kernel_desc}
+                         initrd_desc: ${initrd_desc}
+                         preseed_name: ${preseed_name}
+                         arch: ${machine_arch}
+                         subarch: ${machine_subarch}
+                         machines:
+                         $(for i in "${!mlist[@]}"; do echo -e "- name: ${mlist[$i]}\n  kernel_opts: ${kopts_list[$i]}"; done)
+                         EOF
+
+                         if [ -d "${WORKSPACE}/hpc_lab_setup" ]; then
+                             rm -rf "${WORKSPACE}/hpc_lab_setup"
+                         fi
+                         git clone -b ${automation_branch} https://github.com/Linaro/hpc_lab_setup.git "${WORKSPACE}/hpc_lab_setup"
+
+                         eval `ssh-agent`
+                         ssh-add
+                         ANSIBLE_CONFIG="${WORKSPACE}/hpc_lab_setup/files/ansible/ansible.cfg" ansible-playbook -v "${WORKSPACE}/hpc_lab_setup/files/ansible/provisioning_job.yml" -i "${WORKSPACE}/${DIR_NAME}/hosts"  --extra-vars="@${WORKSPACE}/${DIR_NAME}/provision.yml"
+                         ret=$?
+                         ssh-agent -k
+
+                         exit $ret

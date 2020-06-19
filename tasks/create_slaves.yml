@@ -1,0 +1,44 @@
+---
+- name: Create the Jenkins slaves
+  user:
+          name: "{{ item }}"
+          shell: "/bin/bash"
+          generate_ssh_key: no
+          group: "jenkins_slave"
+  with_list: "{{ jslave_list }}"
+
+- name: Create the slaves .ssh directory
+  file:
+          name: "/home/{{ item }}/.ssh"
+          state: directory
+          owner: "{{ item }}"
+          mode: 0700
+  with_list: "{{ jslave_list }}"
+
+- name: Give the master's ssh key to the slaves
+  copy:
+      src: "{{ key_path }}"
+      dest: "/home/{{ item }}/.ssh/id_rsa"
+      remote_src: yes
+  with_list: "{{ jslave_list }}"
+
+- name: Slurping up the master's public key into a variable
+  slurp:
+    src: "{{ key_path }}.pub"
+  register: master_public_key
+
+- name: Putting the keys into the template for the fileserver
+  template:
+    src: "templates/{{ item }}.j2"
+    dest: "vars/{{ item }}.secret"
+  with_items:
+        - jslaves-benchmark.yml
+        - jslaves-openhpc.yml
+  delegate_to: localhost
+
+- name: Add Master Jenkins' ssh key to the slaves authorized list
+  authorized_key:
+          user: "{{ item }}"
+          state: present
+          key: "{{ master_sshkey }}" 
+  with_list: "{{ jslave_list }}"

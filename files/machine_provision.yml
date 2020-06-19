@@ -1,0 +1,171 @@
+ - job:
+         name: machine_provision
+         description: "This is a job for Provisioning a Machine using MrP"
+         project-type: freestyle
+         block-downstream: false
+         concurrent: true
+         node: "xecutor"
+         properties:
+                 - authorization:
+                         hpc-sig-admin:
+                                 - credentials-create
+                                 - credentials-delete
+                                 - credentials-manage-domains
+                                 - credentials-update
+                                 - credentials-view
+                                 - job-build
+                                 - job-cancel
+                                 - job-configure
+                                 - job-delete
+                                 - job-discover
+                                 - job-move
+                                 - job-read
+                                 - job-status
+                                 - job-workspace
+                                 - ownership-jobs
+                                 - run-delete
+                                 - run-update
+                                 - scm-tag
+                         hpc-sig-devel:
+                                 - job-build
+                                 - job-read
+         parameters:
+                 - choice:
+                         name: machine_type
+                         choices:
+                                 - d03
+                                 - d05
+                                 - qdf
+                                 - tx2
+                                 - x86
+                         description: 'Micro-architecture of the machine to be provisioned'
+                 - choice:
+                         name: job_type
+                         choices:
+                                 - bench
+                                 - ohpc
+                         default: 'bench'
+                         description: 'The job type to be executed on the machine'
+                 - choice:
+                         name: os_type
+                         choices:
+                                 - default
+                                 - debian
+                                 - centos
+                                 - centos-upstream
+                                 - opensuse
+                         default: 'default'
+                         description: 'The OS distribution. Default: Debian for benchmark, CentOS for openhpc'
+                 - string:
+                         name: client_branch
+                         default: 'master'
+                         description: 'The branch of the MrP client to use'
+                 - string:
+                         name: automation_branch
+                         default: 'master'
+                         description: 'The Ansible logic branch to use'
+         builders:
+                 - shell: |
+                        #!/bin/bash
+                        set -ex
+
+                        # Defaults
+                        machine_name="${machine_type}${job_type}"
+                        machine_arch="AArch64"
+                        machine_subarch="GrubWithOptionEfiboot"
+
+                        if [ "${machine_type}" == "x86" ]; then
+                          machine_arch="Intel"
+                          machine_subarch="pxelinux"
+                        fi
+
+                        # Chose default OS
+                        if [ "${os_type}" == "default" ]; then
+                          if [ "${job_type}" == "bench" ]; then
+                            os_type=debian
+                          elif [ "${job_type}" == "ohpc" ]; then
+                            os_type=centos-upstream
+                          else
+                            echo "Unknown job type : ${job_type}"
+                            exit 1
+                          fi
+                        fi
+
+                        # Chose known good kernel/initrd/cmdline
+                        if [ "${os_type}" == "debian" ]; then
+                          preseed_type="preseed"
+                          kernel_desc="Debian ERP 18.06"
+                          initrd_desc="Debian ERP 18.06 w/QED&BNX2X"
+                          preseed_name="Debian"
+                          kernel_opts=
+                          if [ "${machine_arch}" == "Intel" ]; then
+                            kernel_desc="Debian Stretch AMD64"
+                            initrd_desc="Debian Stretch AMD64"
+                            preseed_name="Debian.amd64"
+                            kernel_opts="earlycon"
+                          fi
+                        elif [ "${os_type}" == "centos" ]; then
+                          preseed_type="kickstart"
+                          kernel_desc="CentOS ERP 18.06"
+                          initrd_desc="CentOS ERP 18.06"
+                          preseed_name="CentOS.ERP"
+                          kernel_opts="ip=dhcp text inst.stage2=http://10.40.0.13/releases.linaro.org/reference-platform/enterprise/18.06/centos-installer/ inst.repo=http://10.40.0.13/mirror.centos.org/altarch/7/os/aarch64/ inst.ks=file:/ks.cfg"
+                        elif [ "${os_type}" == "centos-upstream" ]; then
+                          preseed_type="kickstart"
+                          kernel_desc="CentOS 7.5"
+                          initrd_desc="CentOS 7.5"
+                          preseed_name="CentOS.Upstream"
+                          kernel_opts="ip=dhcp text inst.stage2=http://10.40.0.13/mirror.centos.org/altarch/7/os/aarch64/ inst.repo=http://10.40.0.13/mirror.centos.org/altarch/7/os/aarch64/ inst.ks=file:/ks.cfg"
+                          if [ "${machine_arch}" == "Intel" ]; then
+                            kernel_desc="CentOS 7.6 AMD64"
+                            initrd_desc="CentOS 7.6 AMD64"
+                            preseed_name="CentOS.Upstream.amd64"
+                            kernel_opts="ip=dhcp text inst.stage2=http://10.40.0.13/mirror.centos.org/centos/7/os/x86_64/ inst.repo=http://10.40.0.13/mirror.centos.org/centos/7/os/x86_64/ inst.ks=file:/ks.cfg"
+                          fi
+                        elif [ "${os_type}" == "opensuse" ]; then
+                          preseed_type="autoyast"
+                          kernel_desc="openSUSE Leap 15.1"
+                          initrd_desc="openSUSE Leap 15.1"
+                          preseed_name="openSUSE.Upstream"
+                          # 'acpi=force' is needed for D05 with current firmware
+                          kernel_opts="netsetup=dhcp acpi=force install=http://download.opensuse.org/ports/aarch64/distribution/leap/15.1/repo/oss/"
+                        else
+                            echo "Unknown os_type : ${os_type}"
+                            exit 1
+                        fi
+
+                        # Special cases
+                        if [ "${machine_type}" == "d03" ]; then
+                            kernel_opts="${kernel_opts} modprobe.blacklist=hibmc_drm earlycon console=ttyS0,115200"
+                        elif [ "${machine_type}" == "tx2" ]; then
+                            kernel_opts="${kernel_opts} earlycon console=tty0"
+                        elif [ "${machine_type}" == "x86" ]; then
+                            kernel_opts="${kernel_opts} console=ttyS1"
+                        else
+                            kernel_opts="${kernel_opts} earlycon console=ttyAMA0,115200"
+                        fi
+
+                        # Build trigger file
+                        cat << EOF > ${WORKSPACE}/mrp_provision
+                        node="${machine_type}${job_type}"
+                        machine_name=${machine_name}
+                        machine_arch=${machine_arch}
+                        machine_subarch=${machine_subarch}
+                        kernel_opts=${kernel_opts}
+                        kernel_desc=${kernel_desc}
+                        initrd_desc=${initrd_desc}
+                        preseed_name=${preseed_name}
+                        preseed_type=${preseed_type}
+                        client_branch=${client_branch}
+                        automation_branch=${automation_branch}
+                        EOF
+
+                 - conditional-step:
+                         condition-kind: file-exists
+                         condition-filename: mrp_provision
+                         steps:
+                                 - trigger-builds:
+                                         - project: 'provisioning_job'
+                                           property-file: mrp_provision
+                                           current-parameters: true
+                                           block: true

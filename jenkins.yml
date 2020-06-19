@@ -1,0 +1,196 @@
+---
+- hosts: jenkins
+  remote_user: root
+  tasks:
+          - include_vars:
+                  file: ./vars/jslave_list.yml
+
+          - include_vars:
+                  file: ./vars/jslave_to_sftp.yml
+
+          - name: Check that Jenkins master has an SSH key
+            stat:
+                path: "/var/lib/jenkins/.ssh/id_rsa.pub"
+            register: sshkey
+
+          - name: Check that Jenkins master has an host key
+            stat:
+                path: "/etc/ssh/ssh_host_rsa_key.pub"
+            register: hostkey
+
+          - name: Create the Jenkins master SSH key
+            shell: runuser -l jenkins -c "ssh-keygen -f /var/lib/jenkins/.ssh/id_rsa -t rsa -N ''"
+            when: sshkey.stat.exists == False
+
+          - name: Caches the public key
+            slurp:
+                src: /var/lib/jenkins/.ssh/id_rsa.pub
+            register: master_key
+
+          - name: Caches the public key
+            shell: "ssh-keyscan localhost"
+            register: ssh_keyscan_result
+            when: hostkey.stat.exists == True
+
+          - name: Add the Jenkins master SSH key to itself
+            authorized_key:
+                    user: jenkins
+                    state: present
+                    key: "{{ master_key['content'] | b64decode }}" 
+
+          - name: Add the the Jenkins host key to itself
+            known_hosts:
+                    path: "/var/lib/jenkins/.ssh/known_hosts"
+                    name: "localhost"
+                    state: present
+                    key: "{{ ssh_keyscan_result.stdout }}"
+
+          - name: Create jenkins_slave group
+            group:
+                    name: jenkins_slave
+                    state: present
+
+          - include_tasks: ./tasks/create_slaves.yml
+            vars:
+                    master_sshkey: "{{ master_key['content'] | b64decode }}"
+                    key_path: "/var/lib/jenkins/.ssh/id_rsa"
+
+          - include_vars:
+                  file: ./vars/jenkins_cred.yml.secret
+                  name: jenkins_creds
+
+          - name: create credentials in Jenkins for those slaves!
+            jenkins_script:
+                    user: "{{ jenkins_creds.user }}"
+                    password: "{{ jenkins_creds.password }}"
+                    url: "{{ jenkins_creds.url }}"
+                    validate_certs: no
+                    script: "{{ add_ssh_creds }}" 
+                    args:
+                            username: "{{ item }}"
+            with_list: "{{ jslave_list }}"
+            vars:
+                    add_ssh_creds: |
+                        import jenkins.model.*
+                        import com.cloudbees.plugins.credentials.*
+                        import com.cloudbees.plugins.credentials.common.*
+                        import com.cloudbees.plugins.credentials.domains.*
+                        import com.cloudbees.jenkins.plugins.sshcredentials.impl.*
+                        import hudson.plugins.sshslaves.*;
+                        global_domain = Domain.global()
+                        credentials_store =
+                        Jenkins.instance.getExtensionList(
+                        	'com.cloudbees.plugins.credentials.SystemCredentialsProvider')[0].getStore()
+                        credentials = new BasicSSHUserPrivateKey(
+                               	 CredentialsScope.GLOBAL,
+                               	 "$username",
+                               	 "$username",
+                               	 new BasicSSHUserPrivateKey.UsersPrivateKeySource(),
+                               	 "",
+                                 "$username"
+                               	 )
+                        credentials_store.addCredentials(global_domain, credentials)
+
+          - name: create the slaves in Jenkins
+            jenkins_script:
+                    user: "{{ jenkins_creds.user }}"
+                    password: "{{ jenkins_creds.password }}"
+                    url: "{{ jenkins_creds.url }}"
+                    validate_certs: no
+                    script: "{{ add_ssh_slave }}" 
+                    args:
+                            username: "{{ item }}"
+                            coordinatorexec: "{{ jslave_list|count|int*2 if (item != 'xecutor') else 30 }}"
+                            mode: "{{ 'NORMAL' if (item == 'xecutor') else 'EXCLUSIVE' }}"
+            with_list: "{{ jslave_list }}"
+            vars:
+                    add_ssh_slave: |
+                        import hudson.model.Node.Mode
+                        import hudson.slaves.*
+                        import jenkins.model.Jenkins
+                        import hudson.plugins.sshslaves.*
+                        import hudson.plugins.sshslaves.verifiers.*
+                        String credentialID = "$username"
+                        String agentHome = "/home/$username"
+                        String executors = '1'
+                        if (credentialID == 'jslave-coordinator') { executors = "$coordinatorexec" } 
+                        knownhosts = new KnownHostsFileKeyVerificationStrategy()
+                        DumbSlave dumb = new DumbSlave("$username", // Agent name, usually matches the host computer's machine name
+                                "$username", // Agent description
+                                agentHome, // Workspace on the agent's computer
+                                executors, // Number of executors
+                                Mode.$mode, // "Usage" field, EXCLUSIVE is "only tied to node", NORMAL is "any"
+                                "$username", // Labels
+                                new SSHLauncher("localhost", 22, credentialID, "", null, null, "", "", 60, 3, 15, knownhosts),
+                                RetentionStrategy.INSTANCE) // Is the "Availability" field and INSTANCE means "Always"
+                        Jenkins.instance.addNode(dumb)
+                        println agentHome
+
+          - name: Set the master's number of executors
+            jenkins_script:
+                    user: "{{ jenkins_creds.user }}"
+                    password: "{{ jenkins_creds.password }}"
+                    url: "{{ jenkins_creds.url }}"
+                    validate_certs: no
+                    script: "{{ add_master_executors }}" 
+                    args:
+                            masterexec: "0" # xecutor's = 30 (24 + margin)
+            vars:
+                    add_master_executors: |
+                        import hudson.model.*;
+                        import jenkins.model.*;
+                        Jenkins.getInstanceOrNull().setNumExecutors(Integer.parseInt("$masterexec"))
+                        xecutor = Jenkins.getInstanceOrNull().getNode("xecutor")
+                        if (xecutor != null) { 
+                                xecutor.setNumExecutors(Integer.parseInt('30'))
+                        }
+                        Jenkins.getInstanceOrNull().setNodes(Jenkins.getInstanceOrNull().getNodes())
+
+          # The above groovy line is needed to force Jenkins to reaload the slaves
+                        
+          - name: Check for python deps
+            command: dpkg-query -l python3 python3-pip python-requests python-future
+            register: python_installed
+            ignore_errors: True
+
+          - name: Check for ansible package
+            command: dpkg-query -l ansible
+            register: ansible_installed
+            ignore_errors: True
+
+          - name: Check for Jenkins Jobs installed
+            command: python3 -m pip list --format=legacy | grep jenkins-job-builder
+            register: jenkins_job_builder_installed
+            ignore_errors: True
+
+          - name: Install python3, pip and python2 deps
+            apt:
+                    name: "{{ item }}"
+                    state: installed
+                    update_cache: yes
+            with_items:
+                    - python3
+                    - python3-pip
+                    - python-requests
+                    - python-future
+            when: python_installed.rc != 0
+
+          - name: Install Jenkins Job Builder
+            shell: "pip3 install jenkins-job-builder"
+            when: jenkins_job_builder_installed.rc != 0
+
+          - name: Ensure JJB config file dir is there
+            file: 
+                path: /etc/jenkins_jobs
+                state: directory
+
+          - name: Copy JJB config file
+            template:
+                src: "templates/jenkins_jobs.ini.j2"
+                dest: "/etc/jenkins_jobs/jenkins_jobs.ini"
+
+          - name: Install Ansible
+            include_tasks: ./tasks/install_ansible.yml
+            when: ansible_installed.rc != 0
+
+          - include_tasks: ./tasks/jenkins_jobs.yml

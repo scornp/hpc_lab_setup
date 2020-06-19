@@ -1,0 +1,39 @@
+---
+- name: Ensure script dir exists
+  file: path="/var/lib/jenkins/scripts" state=directory
+
+- name: Copy yaml job definition(s)
+  copy:
+      src: "files/{{ item }}.yml"
+      dest: "/var/lib/jenkins/scripts/"
+  with_items:
+          - provisioning_job
+          - machine_provision
+          - benchmark_job
+          - ohpc_install
+          - ohpc_test_suite
+          - cluster_provision
+          - deploy_mtt
+
+- name: Copy yaml view definition(s)
+  copy:
+      src: "files/views/{{ item }}.yml"
+      dest: "/var/lib/jenkins/scripts/"
+  with_items:
+          - benchmark_view
+          - ohpc_view
+          - provisioning_view
+
+- name: Create jobs and views in Jenkins
+  shell: "jenkins-jobs update /var/lib/jenkins/scripts/{{ item }}.yml"
+  with_items:
+          - provisioning_job
+          - machine_provision
+          - benchmark_job
+          - ohpc_install
+          - ohpc_test_suite
+          - cluster_provision
+          - benchmark_view
+          - ohpc_view
+          - provisioning_view
+          - deploy_mtt

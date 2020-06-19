@@ -1,0 +1,10 @@
+---
+sftp_groups:
+- regex: ".*qdf.*"
+  group: qualcomm
+- regex: ".*d0.*"
+  group: huawei
+- regex: ".*tx.*"
+  group: cavium 
+- regex: ".*x86.*"
+  group: intel

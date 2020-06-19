@@ -1,0 +1,169 @@
+ - job:
+         name: benchmark_job
+         description: "This is a job to run a benchmark on a machine"
+         project-type: freestyle
+         block-downstream: false
+         concurrent: true
+         node: "xecutor"
+         properties:
+                 - authorization:
+                         hpc-sig-admin:
+                                 - credentials-create
+                                 - credentials-delete
+                                 - credentials-manage-domains
+                                 - credentials-update
+                                 - credentials-view
+                                 - job-build
+                                 - job-cancel
+                                 - job-configure
+                                 - job-delete
+                                 - job-discover
+                                 - job-move
+                                 - job-read
+                                 - job-status
+                                 - job-workspace
+                                 - ownership-jobs
+                                 - run-delete
+                                 - run-update
+                                 - scm-tag
+                         hpc-sig-devel:
+                                 - job-build
+         parameters:
+                 - node:
+                         name: node
+                         allowed-slaves:
+                                 - d03bench
+                                 - d05bench
+                                 - qdfbench
+                                 - tx2bench
+                                 - x86bench
+                         allowed-multiselect: true
+                         ignore-offline-nodes: true
+                         description: 'Node with which to run the benchmark on the machine'
+                 - string:
+                         name: branch
+                         default: 'master'
+                         description: 'The benchmark_harness branch to use'
+                 - string:
+                         name: automation_branch
+                         default: 'master'
+                         description: 'The Ansible logic branch to use'
+                 - choice:
+                         name: benchmark
+                         choices:
+                                 - lulesh
+                                 - himeno
+                                 - openblas
+                         default: 'lulesh'
+                         description: 'The benchmark to run on the machine'
+                 - choice:
+                         name: size
+                         choices:
+                                 - '3'
+                                 - '2'
+                                 - '1'
+                         default: '2'
+                         description: 'The benchmark specific size parameter. 1 is small, 3 is large.'
+                 - string:
+                         name: iterations
+                         default: '1'
+                         description: 'The number of times to run the binaries (statistical purposes)'
+                 - string:
+                         name: compiler
+                         default: 'gcc'
+                         description: 'The compiler (url or system binary) with which to compile the benchmark'
+                 - string:
+                         name: compiler_flags
+                         default: ''
+                         description: 'The extra compiler flags to compiler with'
+                 - string:
+                         name: linker_flags
+                         default: ''
+                         description: 'The extra linker flags to link with'
+                 - string:
+                         name: run_flags
+                         default: ''
+                         description: 'The extra execution flags to run the benchmark'
+                 - string:
+                         name: harness_options
+                         default: ''
+                         description: 'Additional harnesss options'
+         builders:
+                 - shell: |
+                        #!/bin/bash
+                        set -ex
+                        cd ${WORKSPACE}
+                        eval `ssh-agent`
+                        ssh-add
+
+                        case ${node} in
+                        d03*)
+                            vendor='huawei'
+                            node_type=d03
+                            machine_type=aarch64
+                            ;;
+                        d05*)
+                            vendor='huawei'
+                            node_type=d05
+                            machine_type=aarch64
+                            ;;
+                        qdf*)
+                            vendor='qualcomm'
+                            node_type=qdf
+                            machine_type=aarch64
+                            ;;
+                        tx*)
+                            vendor='cavium'
+                            node_type=tx2
+                            machine_type=aarch64
+                            ;;
+                        x86*)
+                            vendor='intel'
+                            node_type=x86
+                            machine_type=x86_64
+                            ;;
+                        esac
+
+                        if [ -d "${WORKSPACE}/hpc_lab_setup" ]; then
+                            rm -rf "${WORKSPACE}/hpc_lab_setup"
+                        fi
+                        git clone -b ${automation_branch} https://github.com/Linaro/hpc_lab_setup.git "${WORKSPACE}/hpc_lab_setup"
+
+                        if [[ ${compiler} = *"http://"* ]] || [[ ${compiler} = *"ftp://"* ]]; then
+                                ${WORKSPACE}/hpc_lab_setup/files/tarball_cacher.py ${compiler} /tmp/ --upload=sftp://10.40.0.13/toolchains
+                                file=$(basename ${compiler})
+                                compiler="http://10.40.0.13/toolchains/${file}"
+                        fi
+
+                        if [ -d "${WORKSPACE}/mr-provisioner-client" ]; then
+                            rm -rf "${WORKSPACE}/mr-provisioner-client"
+                        fi
+                        git clone https://github.com/Linaro/mr-provisioner-client.git "${WORKSPACE}/mr-provisioner-client"
+
+                        machine_ip=$( "${WORKSPACE}/mr-provisioner-client/mrp_client.py" --mrp-token=$(cat "/home/${NODE_NAME}/mrp_token") --mrp-url="http://10.40.0.11:5000" net --action getip --machine "${node_type}bench" --interface eth1)
+
+                        cat << EOF > "${WORKSPACE}/hosts"
+                        [target]
+                        ${machine_ip}
+                        EOF
+
+                        cat << EOF > benchmark_job.yml
+                        unique_id: ${BUILD_NUMBER}
+                        sftp_dirname: ${node_type}-${BUILD_NUMBER}
+                        sftp_user: ${NODE_NAME}
+                        sftp_server_ip: 10.40.0.13
+                        sftp_path: ${vendor}/benchmark
+                        machine_type: ${machine_type}
+                        branch: ${branch}
+                        benchmark: ${benchmark}
+                        size: ${size}
+                        iterations: ${iterations}
+                        compiler: ${compiler}
+                        compiler_flags: ${compiler_flags}
+                        linker_flags: ${linker_flags}
+                        run_flags: ${run_flags}
+                        harness_options: ${harness_options}
+                        EOF
+
+                        ANSIBLE_CONFIG="${WORKSPACE}/hpc_lab_setup/files/ansible/ansible.cfg" ansible-playbook -v -u root "${WORKSPACE}/hpc_lab_setup/files/ansible/deploy_benchmarks.yml" -i "${WORKSPACE}/hosts"  --extra-vars="@${WORKSPACE}/benchmark_job.yml"
+                        ssh-agent -k 

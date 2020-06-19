@@ -1,0 +1,142 @@
+ - job:
+         name: cluster_provision
+         description: "This is the job to provision a cluster using MrP"
+         project-type: freestyle
+         block-downstream: false
+         concurrent: true
+         node: "xecutor"
+         properties:
+                 - authorization:
+                         hpc-sig-admin:
+                                 - credentials-create
+                                 - credentials-delete
+                                 - credentials-manage-domains
+                                 - credentials-update
+                                 - credentials-view
+                                 - job-build
+                                 - job-cancel
+                                 - job-configure
+                                 - job-delete
+                                 - job-discover
+                                 - job-move
+                                 - job-read
+                                 - job-status
+                                 - job-workspace
+                                 - ownership-jobs
+                                 - run-delete
+                                 - run-update
+                                 - scm-tag
+                         hpc-sig-devel:
+                                 - job-build
+                                 - job-read
+         parameters:
+                 - choice:
+                         name: machine_type
+                         choices:
+                                 - d05
+                                 - qdf
+                                 - tx2
+                                 - x86
+                         description: 'The cluster of machines to be provisioned'
+                 - string:
+                         name: client_branch
+                         default: 'master'
+                         description: 'The branch of the mrp client to use'
+                 - string:
+                         name: automation_branch
+                         default: 'master'
+                         description: 'The Ansible logic branch to use'
+         builders:
+                 - shell: |
+                        #!/bin/bash
+                        set -ex
+                        old_ifs=${IFS}
+                        IFS=""
+                        # Defaults
+                        machine_arch=AArch64
+                        job_type=ohpc
+
+
+                        if [ ${machine_type} == "qdf" ]; then
+                                machine_subarch=GrubWithOptionEfiboot
+                                machine_name="qdfohpc,qdf01,qdf02,qdf03"
+                                preseed_type="kickstart"
+                                kernel_desc="CentOS 7.5"
+                                initrd_desc="CentOS 7.5"
+                                preseed_name="CentOS.Upstream"
+                                stagetwo="http://10.40.0.13/mirror.centos.org/altarch/7/os/aarch64/"
+                                repo="http://10.40.0.13/mirror.centos.org/altarch/7/os/aarch64/"
+                                qdf="earlycon console=ttyAMA0,115200"
+                                special=(${qdf} ${qdf} ${qdf} ${qdf})
+                        elif [ ${machine_type} == "tx2" ]; then
+                                machine_subarch=GrubWithOptionEfiboot
+                                machine_name="tx2ohpc,tx201,tx202"
+                                preseed_type="kickstart"
+                                kernel_desc="CentOS 7.5"
+                                initrd_desc="CentOS 7.5"
+                                preseed_name="CentOS.Upstream"
+                                stagetwo="http://10.40.0.13/mirror.centos.org/altarch/7/os/aarch64/"
+                                repo="http://10.40.0.13/mirror.centos.org/altarch/7/os/aarch64/"
+                                tx2="earlycon console=tty0"
+                                special=(${tx2} ${tx2} ${tx2})
+                        elif [ ${machine_type} == "x86" ]; then
+                                machine_arch=Intel
+                                machine_subarch=pxelinux
+                                machine_name="x86ohpc,x8601,x8602"
+                                preseed_type="kickstart"
+                                kernel_desc="CentOS 7.6 AMD64"
+                                initrd_desc="CentOS 7.6 AMD64"
+                                preseed_name="CentOS.Upstream.amd64"
+                                stagetwo="http://10.40.0.13/mirror.centos.org/centos/7/os/x86_64/"
+                                repo="http://10.40.0.13/mirror.centos.org/centos/7/os/x86_64/"
+                                x86="console=ttyS1"
+                                special=(${x86} ${x86} ${x86})
+                        elif [ ${machine_type} == "d05" ]; then
+                                machine_subarch=GrubWithOptionEfiboot
+                                machine_name="d05ohpc,d0501,d0502,d0503"
+                                preseed_type="kickstart"
+                                kernel_desc="CentOS 7.5"
+                                initrd_desc="CentOS 7.5"
+                                preseed_name="CentOS.Upstream"
+                                stagetwo="http://10.40.0.13/mirror.centos.org/altarch/7/os/aarch64/"
+                                repo="http://10.40.0.13/mirror.centos.org/altarch/7/os/aarch64/"
+                                d05="modprobe.blacklist=hibmc_drm earlycon console=ttyAMA0,115200"
+                                special=(${d05} ${d05} ${d05} ${d05})
+                        fi
+
+                        kernel_opts=""
+                        for ((i = 0; i < ${#special[@]}; i++))
+                        do
+                                if [ -z "${kernel_opts}" ]; then
+                                        kernel_opts="ip=dhcp text inst.stage2=${stagetwo} inst.repo=${repo} inst.ks=file:/ks.cfg ${special[i]}"
+                                else
+                                        kernel_opts="${kernel_opts};ip=dhcp text inst.stage2=${stagetwo} inst.repo=${repo} inst.ks=file:/ks.cfg ${special[i]}"
+                                fi
+                        done
+
+                        IFS=${old_ifs}
+
+                        # Build trigger file
+                        cat << EOF > ${WORKSPACE}/mrp_provision
+                        node="${machine_type}${job_type}"
+                        machine_name=${machine_name}
+                        machine_arch=${machine_arch}
+                        machine_subarch=${machine_subarch}
+                        kernel_opts=${kernel_opts}
+                        kernel_desc=${kernel_desc}
+                        initrd_desc=${initrd_desc}
+                        preseed_name=${preseed_name}
+                        preseed_type=${preseed_type}
+                        client_branch=${client_branch}
+                        automation_branch=${automation_branch}
+                        EOF
+
+                 - conditional-step:
+                         condition-kind: file-exists
+                         condition-filename: mrp_provision
+                         steps:
+                                 - trigger-builds:
+                                         - project: 'provisioning_job'
+                                           property-file: mrp_provision
+                                           current-parameters: true
+                                           block: true

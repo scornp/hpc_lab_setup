@@ -1,0 +1,11 @@
+---
+jslaves_benchmark:
+{% for item in jslave_list|select("match", ".*bench.*") %}
+    - name: {{ item }}
+{% for r in sftp_groups %}
+{% if item is match(r.regex) %}
+      cgroup: {{ r.group }}
+{% endif %}
+{% endfor %}
+      ssh_key: {{ master_public_key['content'] | b64decode }}
+{% endfor %}
